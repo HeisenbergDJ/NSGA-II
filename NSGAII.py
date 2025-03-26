@@ -8,7 +8,77 @@ import numpy as np
 import random
 import matplotlib.pyplot as plt
 import math
+import torch
+import torch.nn as nn
 
+class Generator(nn.Module):
+    def __init__(self, input_dim, output_dim):
+        super(Generator, self).__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, 64),
+            nn.ReLU(),
+            nn.Linear(64, output_dim),
+            nn.Tanh()  # 输出归一化到[-1,1]，需后续缩放
+        )
+    
+    def forward(self, z):
+        return self.net(z)
+
+class Discriminator(nn.Module):
+    def __init__(self, input_dim):
+        super(Discriminator, self).__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, 64),
+            nn.LeakyReLU(0.2),
+            nn.Linear(64, 1),
+            nn.Sigmoid()
+        )
+    
+    def forward(self, x):
+        return self.net(x)
+
+def train_gan(gen, disc, population, device, optimizer_G, optimizer_D, bound_min, bound_max):
+    """训练GAN网络"""
+    real_data = torch.FloatTensor([ind.solution for ind in population]).to(device)
+    batch_size = len(population)
+    
+    # 训练判别器
+    noise = torch.randn(batch_size, 10).to(device)
+    fake_data = gen(noise)
+    
+    real_labels = torch.ones(batch_size, 1).to(device)
+    fake_labels = torch.zeros(batch_size, 1).to(device)
+    
+    # 判别器损失
+    optimizer_D.zero_grad()
+    real_loss = nn.BCELoss()(disc(real_data), real_labels)
+    fake_loss = nn.BCELoss()(disc(fake_data.detach()), fake_labels)
+    d_loss = real_loss + fake_loss
+    d_loss.backward()
+    optimizer_D.step()
+    
+    # 训练生成器
+    optimizer_G.zero_grad()
+    g_loss = nn.BCELoss()(disc(fake_data), real_labels)
+    g_loss.backward()
+    optimizer_G.step()
+
+def generate_by_gan(gen, num, device, bound_min, bound_max, objective_fun):
+    """用GAN生成新个体"""
+    Q = []
+    noise = torch.randn(num, 10).to(device)
+    solutions = gen(noise).cpu().detach().numpy()
+    
+    # 缩放解到定义域
+    solutions = solutions * (bound_max - bound_min)/2 + (bound_max + bound_min)/2
+    
+    for i in range(num):
+        ind = Individual()
+        ind.solution = solutions[i]
+        ind.bound_process(bound_min, bound_max)
+        ind.calculate_objective(objective_fun)
+        Q.append(ind)
+    return Q
 
 class Individual(object):
     def __init__(self):
@@ -63,6 +133,16 @@ def main():
     bound_max = 5
     objective_fun = KUR
 
+
+    # 新增GAN初始化
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    gen = Generator(input_dim=10, output_dim=poplength).to(device)
+    disc = Discriminator(input_dim=poplength).to(device)
+    optimizer_G = torch.optim.Adam(gen.parameters(), lr=0.0002)
+    optimizer_D = torch.optim.Adam(disc.parameters(), lr=0.0002)
+
+
+
     # 生成第一代种群
     P = []
     for i in range(popnum):
@@ -79,6 +159,22 @@ def main():
     Q_t = Q  # 当前这一届的子代种群
 
     for gen_cur in range(generations):
+        
+        # 每10代训练一次GAN
+        if gen_cur % 10 == 0:
+            train_gan(gen, disc, P_t, device, optimizer_G, optimizer_D, bound_min, bound_max)
+        
+        # 用GAN生成部分子代（如30%）
+        num_gan_offspring = int(popnum * 0.3)
+        Q_gan = generate_by_gan(gen, num_gan_offspring, device, bound_min, bound_max, objective_fun)
+        
+        # 传统方式生成剩余子代
+        Q_traditional = make_new_pop(P_t, eta, bound_min, bound_max, objective_fun)[:popnum - num_gan_offspring]
+        
+        # 合并子代
+        Q_t = Q_gan + Q_traditional
+        
+        
         R_t = P_t + Q_t  # combine parent and offspring population
         F = fast_non_dominated_sort(R_t)
 
