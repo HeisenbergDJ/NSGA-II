@@ -10,6 +10,18 @@ import matplotlib.pyplot as plt
 import math
 import torch
 import torch.nn as nn
+import pandas as pd  # 在文件顶部导入
+
+
+def save_population_to_csv(P_t, generation):
+    data = []
+    for ind in P_t:
+        row = list(ind.solution) + list(ind.objective.values())
+        data.append(row)
+    
+    columns = [f'x{i+1}' for i in range(len(P_t[0].solution))] + [f'f{i+1}' for i in range(len(P_t[0].objective))]
+    df = pd.DataFrame(data, columns=columns)
+    df.to_csv(f'population_gen_{generation}.csv', index=False)
 
 class Generator(nn.Module):
     def __init__(self, input_dim, output_dim):
@@ -119,7 +131,7 @@ class Individual(object):
 # TODO 如果目标函数是3个及以上呢，如果比较的支配方向不是越小越好呢？
 def main():
     # 初始化/参数设置
-    generations = 250  # 迭代次数
+    generations = 300  # 迭代次数
     popnum = 100  # 种群大小
     eta = 1  # 变异分布参数，该值越大则产生的后代个体逼近父代的概率越大。Deb建议设为 1
 
@@ -133,6 +145,10 @@ def main():
     bound_max = 5
     objective_fun = KUR
 
+    # poplength = 30  # 单个个体解向量的维数
+    # bound_min = 0  # 定义域
+    # bound_max = 1
+    # objective_fun = ZDT3
 
     # 新增GAN初始化
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -165,7 +181,7 @@ def main():
             train_gan(gen, disc, P_t, device, optimizer_G, optimizer_D, bound_min, bound_max)
         
         # 用GAN生成部分子代（如30%）
-        num_gan_offspring = int(popnum * 0.3)
+        num_gan_offspring = int(popnum * 0.1)
         Q_gan = generate_by_gan(gen, num_gan_offspring, device, bound_min, bound_max, objective_fun)
         
         # 传统方式生成剩余子代
@@ -198,6 +214,7 @@ def main():
         plt.title('current generation:' + str(gen_cur + 1))
         plot_P(P_t)
         plt.pause(0.1)
+        save_population_to_csv(P_t, gen_cur + 1)
 
     plt.show()
 
@@ -387,6 +404,17 @@ def ZDT2(x):
     f[2] = g * (1 - (x[0] / g) ** 2)
 
     return f
+
+def ZDT3(x):
+    poplength = len(x)
+    f = defaultdict(float)
+
+    g = 1 + 9 * sum(x[1:poplength]) / (poplength - 1)
+    f[1] = x[0]
+    f[2] = g * (1 - pow(x[0] / g, 0.5) - (x[0] / g) * math.sin(10 * math.pi * x[0]))
+
+    return f
+
 
 
 def KUR(x):
